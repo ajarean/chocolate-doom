@@ -37,7 +37,8 @@ extern byte*		dc_source;
 // The span blitting interface.
 // Hook in assembler or system specific BLT
 //  here.
-void 	R_DrawColumn (void);
+// void 	R_DrawColumn (void);
+void R_DrawColumn(void);
 void 	R_DrawColumnLow (void);
 
 // The Spectre/Invisibility effect.

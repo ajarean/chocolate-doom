@@ -19,7 +19,9 @@
 //
 
 
-
+#include <pthread.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "doomdef.h"
 #include "deh_main.h"
@@ -43,6 +45,10 @@
 
 // status bar height at bottom of screen
 #define SBARHEIGHT		32
+
+#define MIN(a,b) (((a)<(b))?(a):(b))
+//https://stackoverflow.com/questions/3437404/min-and-max-in-c
+
 
 //
 // All drawing to the view buffer is accomplished in this file.
@@ -99,50 +105,98 @@ int			dccount;
 // Thus a special case loop for very fast rendering can
 //  be used. It has also been used with Wolfenstein 3D.
 // 
-void R_DrawColumn (void) 
-{ 
+
+typedef struct {
+    int start_column;
+    int end_column;
+    int dc_yl;
+    int dc_yh;
+    fixed_t dc_iscale;
+    fixed_t dc_texturemid;
+    lighttable_t* dc_colormap;
+    byte* dc_source;
+} thread;
+
+
+void* R_DrawColumnThread (void* arg) { 
+    thread* data = (thread*)arg;  
+
     int			count; 
     pixel_t*		dest;
     fixed_t		frac;
     fixed_t		fracstep;	 
- 
-    count = dc_yh - dc_yl; 
 
-    // Zero length, column does not exceed a pixel.
-    if (count < 0) 
-	return; 
-				 
-#ifdef RANGECHECK 
-    if ((unsigned)dc_x >= SCREENWIDTH
-	|| dc_yl < 0
-	|| dc_yh >= SCREENHEIGHT) 
-	I_Error ("R_DrawColumn: %i to %i at %i", dc_yl, dc_yh, dc_x); 
-#endif 
+    for(int i = data->start_column; i < data->end_column; i++){
+        count = dc_yh - dc_yl; 
 
-    // Framebuffer destination address.
-    // Use ylookup LUT to avoid multiply with ScreenWidth.
-    // Use columnofs LUT for subwindows? 
-    dest = ylookup[dc_yl] + columnofs[dc_x];  
+        // Zero length, column does not exceed a pixel.
+        if (count < 0) 
+        return NULL; 
+                    
+    #ifdef RANGECHECK 
+        if ((unsigned)dc_x >= SCREENWIDTH
+        || dc_yl < 0
+        || dc_yh >= SCREENHEIGHT) 
+        I_Error ("R_DrawColumn: %i to %i at %i", dc_yl, dc_yh, dc_x); 
+    #endif 
 
-    // Determine scaling,
-    //  which is the only mapping to be done.
-    fracstep = dc_iscale; 
-    frac = dc_texturemid + (dc_yl-centery)*fracstep; 
+        // Framebuffer destination address.
+        // Use ylookup LUT to avoid multiply with ScreenWidth.
+        // Use columnofs LUT for subwindows? 
+        dest = ylookup[dc_yl] + columnofs[dc_x];  
 
-    // Inner loop that does the actual texture mapping,
-    //  e.g. a DDA-lile scaling.
-    // This is as fast as it gets.
-    do 
-    {
-	// Re-map color indices from wall texture column
-	//  using a lighting/special effects LUT.
-	*dest = dc_colormap[dc_source[(frac>>FRACBITS)&127]];
-	
-	dest += SCREENWIDTH; 
-	frac += fracstep;
-	
-    } while (count--); 
+        // Determine scaling,
+        //  which is the only mapping to be done.
+        fracstep = dc_iscale; 
+        frac = dc_texturemid + (dc_yl-centery)*fracstep; 
+
+        // Inner loop that does the actual texture mapping,
+        //  e.g. a DDA-lile scaling.
+        // This is as fast as it gets.
+        do 
+        {
+        // Re-map color indices from wall texture column
+        //  using a lighting/special effects LUT.
+        *dest = dc_colormap[dc_source[(frac>>FRACBITS)&127]];
+        
+        dest += SCREENWIDTH; 
+        frac += fracstep;
+        
+        } while (count--); 
+    }
+
+    return NULL;
 } 
+
+
+void R_DrawColumn(void) {
+    //int dc_yl, int dc_yh, fixed_t dc_iscale, fixed_t dc_texturemid, lighttable_t* dc_colormap, byte* dc_source
+    int num_threads = 4; 
+    pthread_t threads[num_threads];
+    thread thread_data[num_threads];
+
+    int columns_per_task = SCREENWIDTH / num_threads;
+
+    for (int i = 0; i < num_threads; i++) {
+        thread_data[i].start_column = i * columns_per_task + MIN(i, SCREENWIDTH % num_threads);
+        thread_data[i].end_column = (i + 1) * columns_per_task + MIN(i + 1, SCREENWIDTH % num_threads) - 1;
+        thread_data[i].dc_yl = dc_yl;
+        thread_data[i].dc_yh = dc_yh;
+        thread_data[i].dc_iscale = dc_iscale;
+        thread_data[i].dc_texturemid = dc_texturemid;
+        thread_data[i].dc_colormap = dc_colormap;
+        thread_data[i].dc_source = dc_source;
+
+        pthread_create(&threads[i], NULL, R_DrawColumnThread, &thread_data[i]);
+    }
+
+    for (int i = 0; i < num_threads; i++) {
+        pthread_join(threads[i], NULL);
+    }
+}
+
+
+
 
 
 
@@ -855,7 +909,7 @@ void R_FillBackScreen (void)
     } 
      
     // Draw screen and bezel; this is done to a separate screen buffer.
-
+    
     V_UseBuffer(background_buffer);
 
     patch = W_CacheLumpName(DEH_String("brdr_t"),PU_CACHE);
